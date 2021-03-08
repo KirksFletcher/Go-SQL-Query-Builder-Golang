@@ -23,6 +23,12 @@ type Sqlbuilder struct {
 	Dialect string //Can be postgres, mysql or (more to come)
 }
 
+func New(dialect string) *Sqlbuilder {
+	return &Sqlbuilder{
+		Dialect:        dialect,
+	}
+}
+
 func (s *Sqlbuilder) From(fromStmt string) *Sqlbuilder {
 	s.fromStmt = s.formatSchema(fromStmt)
 
@@ -52,33 +58,39 @@ func (s *Sqlbuilder) Select(selectStmt ...string) *Sqlbuilder {
 	return s
 }
 
-func (s *Sqlbuilder) Where(table string, operator string, value string) *Sqlbuilder {
+func (s *Sqlbuilder) Where(table string, operator string, value interface{}) *Sqlbuilder {
+
+	val, ok := printInterface(reflect.ValueOf(value))
+	if !ok {
+		// TODO: handle
+		return s
+	}
 
 	operator = strings.ToUpper(operator)
-	value = strings.TrimSuffix(value, `'`)
-	value = strings.TrimSuffix(value, `"`)
-	value = strings.TrimSuffix(value, "`")
-	value = strings.TrimPrefix(value, `'`)
-	value = strings.TrimPrefix(value, `"`)
-	value = strings.TrimPrefix(value, "`")
+	val = strings.TrimSuffix(val, `'`)
+	val = strings.TrimSuffix(val, `"`)
+	val = strings.TrimSuffix(val, "`")
+	val = strings.TrimPrefix(val, `'`)
+	val = strings.TrimPrefix(val, `"`)
+	val = strings.TrimPrefix(val, "`")
 
 	switch operator {
 	case `BETWEEN`:
 		re := regexp.MustCompile("and|AND|And")
-		vp := re.Split(value, -1)
+		vp := re.Split(val, -1)
 
-		value = ``
+		val = ``
 
 		for _, v := range vp {
-			value += sanitiseString(`'` + strings.TrimSpace(v) + `'`) + ` AND `
+			val += sanitiseString(`'` + strings.TrimSpace(v) + `'`) + ` AND `
 		}
 
-		value = strings.TrimSuffix(value, ` AND `)
+		val = strings.TrimSuffix(val, ` AND `)
 	default:
-		value = sanitiseString(`'` + value + `'`)
+		val = sanitiseString(`'` + val + `'`)
 	}
 
-	s.whereStmt += s.formatSchema(table) + " " + operator + " " + value + ` AND `
+	s.whereStmt += s.formatSchema(table) + " " + operator + " " + val + ` AND `
 
 	return s
 }
@@ -165,12 +177,17 @@ func (s *Sqlbuilder) LeftJoin(table string, as string, on string) *Sqlbuilder {
 	return s
 }
 
-func (s *Sqlbuilder) LeftJoinExtended(table string, as string, on string, additionalQuery string) *Sqlbuilder {
+func (s *Sqlbuilder) LeftJoinExtended(table string, as string, on string, additionalQuery ...string) *Sqlbuilder {
 
 	table = s.formatSchema(table)
 	on = s.formatJoinOn(on)
 
-	s.leftjoinStmt += `LEFT JOIN ` + table + ` AS "` + as + `" ON ` + on + ` ` + additionalQuery + ` `
+	var q string
+	if len(additionalQuery) == 1 {
+		q = additionalQuery[0]
+	}
+
+	s.leftjoinStmt += `LEFT JOIN ` + table + ` AS "` + as + `" ON ` + on + ` ` + q + ` `
 	return s
 }
 
@@ -275,13 +292,18 @@ func (s *Sqlbuilder) Build() string {
 }
 
 
-func (s *Sqlbuilder) BuildInsert(table string, data interface{}, additionalQuery string) (string, error) {
+func (s *Sqlbuilder) BuildInsert(table string, data interface{}, additionalQuery ...string) (string, error) {
 	dbCols, dbVals, err := mapStruct(data)
 	if err != nil {
 		return "", err
 	}
 
-	sql := "INSERT INTO " + s.formatSchema(table) + " (" + strings.Join(dbCols, ", ") + ") VALUES (" + strings.Join(dbVals, ", ") + ") " + additionalQuery
+	var q string
+	if len(additionalQuery) == 1 {
+		q = additionalQuery[0]
+	}
+
+	sql := "INSERT INTO " + s.formatSchema(table) + " (" + strings.Join(dbCols, ", ") + ") VALUES (" + strings.Join(dbVals, ", ") + ") " + q
 
 	return sql, nil
 }
@@ -400,35 +422,45 @@ func mapStruct (data interface{}) (dbCols []string, dbVals []string, error error
 
 		var v string
 
-		switch value.Kind() {
-		case reflect.String:
-			v = "'" + sanitiseString(value.String()) + "'"
-		case reflect.Int:
-			v = strconv.FormatInt(value.Int(), 10)
-		case reflect.Int8:
-			v = strconv.FormatInt(value.Int(), 10)
-		case reflect.Int32:
-			v = strconv.FormatInt(value.Int(), 10)
-		case reflect.Int64:
-			v = strconv.FormatInt(value.Int(), 10)
-		case reflect.Float64:
-			v = fmt.Sprintf("%f", value.Float())
-		case reflect.Float32:
-			v = fmt.Sprintf("%f", value.Float())
-		case reflect.Bool:
-			if value.Bool(){
-				v = "TRUE"
-			}else{
-				v = "FALSE"
-			}
-		default:
+		v, ok := printInterface(value)
+		if !ok {
 			return dbCols, dbVals, errors.New("type: " + value.Kind().String() + " unsupported")
 		}
-
 		dbVals = append(dbVals, v)
 	}
 
 	return dbCols, dbVals, nil
+}
+
+func printInterface(value reflect.Value) (string, bool) {
+	var v string
+
+	switch value.Kind() {
+	case reflect.String:
+		v = "'" + sanitiseString(value.String()) + "'"
+	case reflect.Int:
+		v = strconv.FormatInt(value.Int(), 10)
+	case reflect.Int8:
+		v = strconv.FormatInt(value.Int(), 10)
+	case reflect.Int32:
+		v = strconv.FormatInt(value.Int(), 10)
+	case reflect.Int64:
+		v = strconv.FormatInt(value.Int(), 10)
+	case reflect.Float64:
+		v = fmt.Sprintf("%f", value.Float())
+	case reflect.Float32:
+		v = fmt.Sprintf("%f", value.Float())
+	case reflect.Bool:
+		if value.Bool(){
+			v = "TRUE"
+		}else{
+			v = "FALSE"
+		}
+	default:
+		return "", false
+	}
+
+	return v, true
 }
 
 func sanitiseString(str string) string {
@@ -436,10 +468,9 @@ func sanitiseString(str string) string {
 	if len(str) > 0 {
 		rebuildSingles := false
 
-		if string(str[0]) == "'" && string(str[len(str) - 1]) == "'" {
+		if string(str[0]) == "'" && string(str[len(str)-1]) == "'" {
 			rebuildSingles = true
 		}
-
 
 		str = strings.TrimSuffix(strings.TrimPrefix(str, "'"), "'")
 		str = strings.ReplaceAll(str, "'", "''")
